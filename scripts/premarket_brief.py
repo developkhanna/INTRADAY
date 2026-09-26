@@ -117,17 +117,31 @@ class Feed:
             frames[symbol] = frame.set_index("timestamp").sort_index()
         return frames
 
-    def news(self, symbols: list[str], since: pd.Timestamp, limit: int = 50) -> list[dict]:
-        payload = self.get(
-            "/v1beta1/news",
-            {
+    def news(
+        self, symbols: list[str], since: pd.Timestamp, limit: int = 50, max_pages: int = 20
+    ) -> list[dict]:
+        """Every article in the window, paginated.
+
+        One page of 50 spread over a watchlist of forty names leaves most
+        symbols with nothing, so follow the cursor to the end of the window.
+        """
+        articles: list[dict] = []
+        page_token = None
+        for _ in range(max_pages):
+            params = {
                 "symbols": ",".join(symbols),
                 "start": since.isoformat().replace("+00:00", "Z"),
                 "limit": limit,
                 "sort": "desc",
-            },
-        )
-        return payload.get("news") or []
+            }
+            if page_token:
+                params["page_token"] = page_token
+            payload = self.get("/v1beta1/news", params)
+            articles.extend(payload.get("news") or [])
+            page_token = payload.get("next_page_token")
+            if not page_token:
+                break
+        return articles
 
     def clock(self) -> dict:
         return self.get("/v2/clock", base=self.config.trading_url)
