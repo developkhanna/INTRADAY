@@ -376,14 +376,34 @@ def candidate_levels(data: dict, risk) -> dict:
     }
 
 
+def _pct(value: float | None) -> str:
+    """A percentage, or an em dash when the number does not exist yet."""
+    return f"{value * 100:+.2f}%" if value is not None else "—"
+
+
+def _num(value: float | None, spec: str = ",.0f") -> str:
+    return format(value, spec) if value is not None else "—"
+
+
 def to_markdown(pack: dict) -> str:
     window, risk = pack["window"], pack["risk"]
+    has_premarket = any(
+        data.get("premarket_bars") for data in pack["symbols"].values()
+    )
     lines = [
         f"# Pre-market data pack — {window['session_date']}",
         "",
         f"Built {window['now_et']} ET, {window['minutes_to_open']:.0f} minutes to the open."
         + (f" Early close at {window['early_close_et']} ET." if window["early_close_et"] else ""),
         "",
+    ]
+    if not has_premarket:
+        lines += [
+            "No pre-market tape yet: every gap, pre-market volume and relative-volume "
+            "cell is empty, and prices shown are the prior close.",
+            "",
+        ]
+    lines += [
         f"Equity ${risk['account_equity']:,.0f} · new trade ${risk['position_size']:,.0f} "
         f"· daily stop ${risk['daily_loss_limit_dollars']:,.0f} "
         f"· hard ceiling {risk['hard_stop_pct']:.0%} · max {risk['max_open_positions']} open",
@@ -399,8 +419,8 @@ def to_markdown(pack: dict) -> str:
             continue
         lines.append(
             f"| {symbol} | {data.get('prior_close', float('nan')):.2f} | "
-            f"{(data.get('gap_pct') or 0) * 100:+.2f}% | "
-            f"{(data.get('premarket_volume') or 0):,.0f} |"
+            f"{_pct(data.get('gap_pct'))} | "
+            f"{_num(data.get('premarket_volume'))} |"
         )
 
     lines += [
@@ -411,13 +431,13 @@ def to_markdown(pack: dict) -> str:
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in pack["positions"]:
-        pnl = (row.get("unrealized_pct") or 0) * 100
-        room = (row.get("room_to_hard_exit_pct") or 0) * 100
         lines.append(
             f"| {row['symbol']} | {row['quantity']:.4g} | {row['avg_price']:.2f} | "
-            f"{(row.get('reference_price') or 0):.2f} | {pnl:+.1f}% | "
-            f"{row['hard_exit_price']:.2f} | {room:+.1f}% | "
-            f"{(row.get('gap_pct') or 0) * 100:+.2f}% |"
+            f"{_num(row.get('reference_price'), '.2f')} | "
+            f"{_num((row.get('unrealized_pct') or 0) * 100, '+.1f')}% | "
+            f"{row['hard_exit_price']:.2f} | "
+            f"{_num((row.get('room_to_hard_exit_pct') or 0) * 100, '+.1f')}% | "
+            f"{_pct(row.get('gap_pct'))} |"
         )
 
     lines += [
@@ -431,8 +451,8 @@ def to_markdown(pack: dict) -> str:
         levels = data["levels"]
         lines.append(
             f"| {symbol} | {data.get('prior_close', float('nan')):.2f} | "
-            f"{(data.get('gap_pct') or 0) * 100:+.2f}% | "
-            f"{(levels.get('relative_volume_premarket') or 0):.3f} | "
+            f"{_pct(data.get('gap_pct'))} | "
+            f"{_num(levels.get('relative_volume_premarket'), '.3f')} | "
             f"{(data.get('minute_range_pct') or 0) * 100:.3f}% | "
             f"{levels.get('working_stop_price', 0):.2f} | "
             f"{levels.get('target_2r_price', 0):.2f} | "
@@ -440,8 +460,13 @@ def to_markdown(pack: dict) -> str:
         )
 
     lines += ["", "## Headlines (last 36h)", ""]
-    for symbol, data in pack["candidates"][:12]:
-        if not data["news"]:
+    held_first = [row["symbol"] for row in pack["positions"]]
+    news_symbols = held_first + [
+        symbol for symbol, _ in pack["candidates"][:12] if symbol not in set(held_first)
+    ]
+    for symbol in news_symbols:
+        data = pack["symbols"].get(symbol) or {}
+        if not data.get("news"):
             continue
         lines.append(f"**{symbol}**")
         for item in data["news"][:4]:
