@@ -110,9 +110,7 @@ def _ledger() -> Ledger:
 @app.get("/api/watchlist")
 def get_watchlist() -> dict:
     settings = settings_from_watchlist()
-    store = BarStore()
-    coverage = store.coverage()
-    covered = set(coverage["symbol"]) if not coverage.empty else set()
+    covered = set(BarStore().symbols())
     return {
         "symbols": list(load_watchlist()),
         "support_symbols": list(settings.support_symbols()),
