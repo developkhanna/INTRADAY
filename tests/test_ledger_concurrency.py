@@ -19,9 +19,12 @@ def open_ledger(path: str, results) -> None:
 def test_several_processes_can_open_the_ledger_at_the_same_moment(tmp_path):
     """Regression: two processes creating the schema raced into a write-write conflict."""
     path = str(tmp_path / "ledger.duckdb")
-    with mp.Manager() as manager:
+    # Spawn, not fork: forking an interpreter with duckdb and pandas already
+    # loaded is unsafe and the child can die before it reaches the assertion.
+    ctx = mp.get_context("spawn")
+    with ctx.Manager() as manager:
         results = manager.list()
-        workers = [mp.Process(target=open_ledger, args=(path, results)) for _ in range(4)]
+        workers = [ctx.Process(target=open_ledger, args=(path, results)) for _ in range(4)]
         for worker in workers:
             worker.start()
         for worker in workers:
