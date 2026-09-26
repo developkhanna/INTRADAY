@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Intraday prediction engine</title>
+<style>
+  :root { color-scheme: dark; --bg:#0d1117; --panel:#161b22; --line:#30363d; --text:#e6edf3; --muted:#8b949e; --up:#3fb950; --down:#f85149; --warn:#d29922; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+  header { padding:16px 24px; border-bottom:1px solid var(--line); display:flex; gap:24px; align-items:baseline; }
+  h1 { font-size:16px; margin:0; font-weight:600; }
+  nav button { background:none; border:none; color:var(--muted); cursor:pointer; font-size:14px; padding:4px 0; }
+  nav button.active { color:var(--text); border-bottom:2px solid var(--text); }
+  main { padding:24px; max-width:1200px; }
+  section { display:none; }
+  section.active { display:block; }
+  table { width:100%; border-collapse:collapse; margin-top:12px; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); font-variant-numeric:tabular-nums; }
+  th { color:var(--muted); font-weight:500; font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  .pill { padding:2px 8px; border-radius:999px; font-size:12px; border:1px solid var(--line); }
+  .buy { color:var(--up); border-color:var(--up); }
+  .wait { color:var(--warn); border-color:var(--warn); }
+  .no { color:var(--muted); }
+  .banner { background:var(--panel); border:1px solid var(--warn); border-left-width:3px; padding:12px 16px; border-radius:6px; margin-bottom:16px; color:var(--muted); }
+  .eli5 { color:var(--muted); font-size:13px; max-width:520px; }
+  textarea { width:100%; min-height:120px; background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:12px; font-family:ui-monospace,monospace; }
+  button.primary { background:#238636; border:none; color:white; padding:8px 16px; border-radius:6px; cursor:pointer; margin-top:8px; }
+  .muted { color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Intraday prediction engine</h1>
+  <nav>
+    <button data-tab="forecasts" class="active">Forecasts</button>
+    <button data-tab="validation">Accuracy</button>
+    <button data-tab="watchlist">Watchlist</button>
+  </nav>
+</header>
+<main>
+  <section id="forecasts" class="active">
+    <div class="banner" id="status">Loading…</div>
+    <table><thead><tr>
+      <th>Symbol</th><th>Horizon</th><th>Chance target hits first</th><th>Target / stop</th>
+      <th>Cost</th><th>Edge after costs</th><th>Action</th><th>Why (plain English)</th>
+    </tr></thead><tbody id="forecast-rows"></tbody></table>
+  </section>
+
+  <section id="validation">
+    <div class="banner">
+      Out-of-sample means: the model was trained only on days before the test days.
+      A model is marked VALIDATED only if it beats the base rate on most folds.
+    </div>
+    <h3>Walk-forward folds</h3>
+    <table><thead><tr><th>Target</th><th>Status</th><th>Mean AUC</th><th>Folds</th></tr></thead>
+      <tbody id="wf-rows"></tbody></table>
+    <h3>Live accuracy (recorded before the outcome was known)</h3>
+    <table><thead><tr><th>Model</th><th>Horizon</th><th>Predictions</th><th>Predicted</th><th>Actual</th></tr></thead>
+      <tbody id="live-rows"></tbody></table>
+    <h3>Calibration</h3>
+    <table><thead><tr><th>Bucket</th><th>N</th><th>We said</th><th>It happened</th></tr></thead>
+      <tbody id="cal-rows"></tbody></table>
+  </section>
+
+  <section id="watchlist">
+    <p class="muted">One symbol per line. Saving updates data collection and features; run the sync to backfill new names.</p>
+    <textarea id="symbols"></textarea>
+    <button class="primary" id="save">Save watchlist</button>
+    <p id="wl-status" class="muted"></p>
+  </section>
+</main>
+<script>
+const pct = v => v == null || isNaN(v) ? "—" : (v * 100).toFixed(2) + "%";
+const cls = a => a === "BUY" ? "buy" : a === "BUY ON TRIGGER" ? "wait" : "no";
+
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("nav button").forEach(x => x.classList.remove("active"));
+  document.querySelectorAll("section").forEach(x => x.classList.remove("active"));
+  b.classList.add("active");
+  document.getElementById(b.dataset.tab).classList.add("active");
+});
+
+async function loadForecasts() {
+  const data = await (await fetch("/api/forecasts")).json();
+  const rows = data.rows || [];
+  const body = document.getElementById("forecast-rows");
+  const unvalidated = rows.filter(r => r.model_status !== "VALIDATED").length;
+  document.getElementById("status").textContent = rows.length === 0
+    ? "No predictions recorded yet. Train the models and start the live loop."
+    : unvalidated > 0
+      ? `${unvalidated} of ${rows.length} predictions come from models that have NOT beaten their baseline out of sample — shown for monitoring only, not for trading.`
+      : `${rows.length} predictions from validated models.`;
+  body.innerHTML = rows.map(r => `<tr>
+    <td>${r.symbol}</td><td>${r.horizon_minutes}m</td><td>${pct(r.probability)}</td>
+    <td>+${pct(r.target_pct)} / -${pct(r.stop_pct)}</td><td>${pct(r.cost_pct)}</td>
+    <td>${pct(r.expected_value_pct)}</td>
+    <td><span class="pill ${cls(r.action)}">${r.action}</span></td>
+    <td class="eli5">${r.eli5 ?? ""}</td></tr>`).join("");
+}
+
+async function loadValidation() {
+  const data = await (await fetch("/api/validation")).json();
+  document.getElementById("wf-rows").innerHTML = (data.walk_forward || []).map(r => `<tr>
+    <td>${r.target}</td><td>${r.status}</td><td>${(r.mean_auc ?? NaN).toFixed?.(3) ?? "—"}</td>
+    <td>${(r.folds || []).length}</td></tr>`).join("") || `<tr><td colspan="4" class="muted">No validation run yet.</td></tr>`;
+  document.getElementById("live-rows").innerHTML = (data.live || []).map(r => `<tr>
+    <td>${r.model_version}</td><td>${r.horizon_minutes}m</td><td>${r.n}</td>
+    <td>${pct(r.predicted_rate)}</td><td>${pct(r.actual_rate)}</td></tr>`).join("")
+    || `<tr><td colspan="5" class="muted">No resolved predictions yet.</td></tr>`;
+  document.getElementById("cal-rows").innerHTML = (data.calibration || []).map(r => `<tr>
+    <td>${r.bucket}</td><td>${r.n}</td><td>${pct(r.predicted)}</td><td>${pct(r.actual)}</td></tr>`).join("")
+    || `<tr><td colspan="4" class="muted">Not enough resolved predictions yet.</td></tr>`;
+}
+
+async function loadWatchlist() {
+  const data = await (await fetch("/api/watchlist")).json();
+  document.getElementById("symbols").value = (data.symbols || []).join("\n");
+  document.getElementById("wl-status").textContent = (data.missing_data || []).length
+    ? "No local data yet for: " + data.missing_data.join(", ")
+    : "All watchlist symbols have local history.";
+}
+
+document.getElementById("save").onclick = async () => {
+  const symbols = document.getElementById("symbols").value.split("\n").map(s => s.trim()).filter(Boolean);
+  const res = await fetch("/api/watchlist", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({symbols})
+  });
+  const data = await res.json();
+  document.getElementById("wl-status").textContent = res.ok
+    ? `Saved ${data.symbols.length} symbols. ${data.note}`
+    : `Error: ${data.detail}`;
+};
+
+loadForecasts(); loadValidation(); loadWatchlist();
+setInterval(loadForecasts, 60000);
+</script>
+</body>
+</html>
