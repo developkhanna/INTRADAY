@@ -1,0 +1,20 @@
+{
+  "_comment": [
+    "Example only — real numbers never live in this public repo.",
+    "The briefing reads ~/.intraday/positions.json, risk.json and watchlist.json.",
+    "Copy the three blocks below into those files to seed a fresh machine."
+  ],
+  "positions.json": [
+    { "symbol": "AAPL", "quantity": 3.0, "avg_price": 340.67 },
+    { "symbol": "AMZN", "quantity": 17.5, "avg_price": 256.97 }
+  ],
+  "risk.json": {
+    "account_equity": 40000.0,
+    "position_size": 1000.0,
+    "hard_stop_pct": 0.2,
+    "daily_loss_limit_pct": 0.025,
+    "max_open_positions": 5,
+    "honor_stop_on_model_trades": true
+  },
+  "watchlist.json": ["AAPL", "AMZN", "META", "NVDA"]
+}
