@@ -27,6 +27,13 @@
   textarea { width:100%; min-height:120px; background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:12px; font-family:ui-monospace,monospace; }
   button.primary { background:#238636; border:none; color:white; padding:8px 16px; border-radius:6px; cursor:pointer; margin-top:8px; }
   .muted { color:var(--muted); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; max-width:760px; margin-top:12px; }
+  .grid label { display:flex; flex-direction:column; gap:4px; color:var(--muted); font-size:13px; }
+  .grid input[type=number] { background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:8px; }
+  .attention { background:var(--panel); border:1px solid var(--down); border-left-width:3px; border-radius:6px; padding:8px 16px; margin-bottom:20px; }
+  .attention-row { padding:6px 0; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .warnpill { color:var(--warn); border-color:var(--warn); }
+  .soundbox { margin-left:auto; color:var(--muted); font-size:13px; display:flex; gap:6px; align-items:center; }
 </style>
 </head>
 <body>
@@ -35,10 +42,15 @@
   <nav>
     <button data-tab="forecasts" class="active">Forecasts</button>
     <button data-tab="validation">Accuracy</button>
+    <button data-tab="positions">Positions</button>
     <button data-tab="watchlist">Watchlist</button>
+    <button data-tab="risk">Risk</button>
   </nav>
+  <label class="soundbox"><input type="checkbox" id="sound" /> Sound when something needs a decision</label>
 </header>
 <main>
+  <div id="attention" class="attention" hidden></div>
+
   <section id="forecasts" class="active">
     <div class="banner" id="status">Loading…</div>
     <table><thead><tr>
@@ -61,6 +73,41 @@
     <h3>Calibration</h3>
     <table><thead><tr><th>Bucket</th><th>N</th><th>We said</th><th>It happened</th></tr></thead>
       <tbody id="cal-rows"></tbody></table>
+  </section>
+
+  <section id="positions">
+    <div class="banner">
+      These are positions you opened yourself, so the engine has no entry thesis for them.
+      It only tells you where each one sits against your hard loss ceiling, plus the model's
+      current view when there is a validated one.
+    </div>
+    <table><thead><tr>
+      <th>Symbol</th><th>Qty</th><th>Avg price</th><th>Last</th><th>P&amp;L</th>
+      <th>Status</th><th>Hard exit at</th><th>Action</th><th>Why (plain English)</th>
+    </tr></thead><tbody id="position-rows"></tbody></table>
+    <h3>Edit positions</h3>
+    <p class="muted">One per line: <code>SYMBOL, quantity, average price</code></p>
+    <textarea id="positions-text"></textarea>
+    <button class="primary" id="save-positions">Save positions</button>
+    <p id="pos-status" class="muted"></p>
+  </section>
+
+  <section id="risk">
+    <p class="muted">
+      The hard stop is the loss you will never exceed. The working stop is the normal exit,
+      set from the stock's own minute-by-minute volatility.
+    </p>
+    <div class="grid">
+      <label>Account equity ($)<input id="account_equity" type="number" step="100" /></label>
+      <label>Position size ($)<input id="position_size" type="number" step="100" /></label>
+      <label>Hard stop (% of position)<input id="hard_stop_pct" type="number" step="0.01" /></label>
+      <label>Daily loss limit (% of account)<input id="daily_loss_limit_pct" type="number" step="0.005" /></label>
+      <label>Max open positions<input id="max_open_positions" type="number" step="1" /></label>
+      <label>Obey working stop on the engine's own trades
+        <input id="honor_stop_on_model_trades" type="checkbox" /></label>
+    </div>
+    <button class="primary" id="save-risk">Save risk settings</button>
+    <p id="risk-status" class="muted"></p>
   </section>
 
   <section id="watchlist">
@@ -133,8 +180,85 @@ document.getElementById("save").onclick = async () => {
     : `Error: ${data.detail}`;
 };
 
-loadForecasts(); loadValidation(); loadWatchlist();
-setInterval(loadForecasts, 60000);
+async function loadPositions() {
+  const data = await (await fetch("/api/positions")).json();
+  const rows = data.rows || [];
+  document.getElementById("position-rows").innerHTML = rows.map(r => `<tr>
+    <td>${r.symbol}</td><td>${r.quantity}</td><td>${r.avg_price.toFixed(2)}</td>
+    <td>${r.price.toFixed(2)}</td>
+    <td class="${r.unrealized_pct >= 0 ? "buy" : "no"}">${pct(r.unrealized_pct)} (${r.unrealized_dollars.toFixed(0)})</td>
+    <td><span class="pill ${statusClass(r.status)}">${r.status}</span></td>
+    <td>${r.hard_stop_price.toFixed(2)}</td>
+    <td><span class="pill ${r.action === "HOLD" ? "wait" : "no"}">${r.action}</span></td>
+    <td class="eli5">${r.eli5}</td></tr>`).join("")
+    || `<tr><td colspan="9" class="muted">No positions recorded.</td></tr>`;
+  document.getElementById("positions-text").value =
+    rows.map(r => `${r.symbol}, ${r.quantity}, ${r.avg_price}`).join("\n");
+  renderAttention(data.attention || []);
+}
+
+function statusClass(status) {
+  return status === "EXIT NOW" ? "no" : status === "DECIDE" ? "warnpill" : status === "WATCHING" ? "wait" : "buy";
+}
+
+let lastAttention = 0;
+
+function renderAttention(rows) {
+  const box = document.getElementById("attention");
+  box.hidden = rows.length === 0;
+  box.innerHTML = rows.map(r => `<div class="attention-row">
+    <span class="pill ${statusClass(r.status)}">${r.status}</span>
+    <strong>${r.symbol}</strong> ${pct(r.unrealized_pct)}
+    <span class="muted">${r.reason}. Out no matter what at $${r.hard_stop_price.toFixed(2)}.</span>
+  </div>`).join("");
+  document.title = rows.length ? `(${rows.length}) Intraday — needs you` : "Intraday prediction engine";
+  if (rows.length > lastAttention && document.getElementById("sound").checked) beep();
+  lastAttention = rows.length;
+}
+
+function beep() {
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const osc = ctx.createOscillator();
+  osc.frequency.value = 660;
+  osc.connect(ctx.destination);
+  osc.start();
+  setTimeout(() => { osc.stop(); ctx.close(); }, 200);
+}
+
+document.getElementById("save-positions").onclick = async () => {
+  const positions = document.getElementById("positions-text").value.split("\n")
+    .map(l => l.split(",").map(s => s.trim())).filter(p => p.length === 3 && p[0])
+    .map(([symbol, quantity, avg_price]) => ({symbol, quantity: +quantity, avg_price: +avg_price}));
+  const res = await fetch("/api/positions", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({positions})
+  });
+  document.getElementById("pos-status").textContent = res.ok ? `Saved ${positions.length}.` : "Error saving.";
+  loadPositions();
+};
+
+const RISK_FIELDS = ["account_equity", "position_size", "hard_stop_pct", "daily_loss_limit_pct", "max_open_positions"];
+
+async function loadRisk() {
+  const data = await (await fetch("/api/risk")).json();
+  RISK_FIELDS.forEach(f => document.getElementById(f).value = data.risk[f]);
+  document.getElementById("honor_stop_on_model_trades").checked = data.risk.honor_stop_on_model_trades;
+  document.getElementById("risk-status").textContent =
+    `Hard stop $${data.hard_stop_dollars.toFixed(0)} per position; stop suggesting new trades after $${data.daily_loss_limit_dollars.toFixed(0)} lost in a day.`;
+}
+
+document.getElementById("save-risk").onclick = async () => {
+  const body = {honor_stop_on_model_trades: document.getElementById("honor_stop_on_model_trades").checked};
+  RISK_FIELDS.forEach(f => body[f] = +document.getElementById(f).value);
+  const res = await fetch("/api/risk", {
+    method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)
+  });
+  document.getElementById("risk-status").textContent = res.ok ? "Saved." : "Error saving.";
+  if (res.ok) { loadRisk(); loadPositions(); }
+};
+
+loadForecasts(); loadValidation(); loadWatchlist(); loadPositions(); loadRisk();
+setInterval(() => { loadForecasts(); loadPositions(); }, 60000);
 </script>
 </body>
 </html>

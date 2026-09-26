@@ -9,6 +9,7 @@ the models did not really produce.
 from __future__ import annotations
 
 import json
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import pandas as pd
@@ -20,6 +21,8 @@ from pydantic import BaseModel
 from intraday.config import MODEL_DIR, load_watchlist, save_watchlist, settings_from_watchlist
 from intraday.data.store import BarStore
 from intraday.live.ledger import Ledger
+from intraday.positions import Position, load_positions, review, save_positions
+from intraday.risk import load_risk, save_risk
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -28,6 +31,25 @@ app = FastAPI(title="Intraday prediction engine")
 
 class WatchlistUpdate(BaseModel):
     symbols: list[str]
+
+
+class PositionInput(BaseModel):
+    symbol: str
+    quantity: float
+    avg_price: float
+
+
+class PositionsUpdate(BaseModel):
+    positions: list[PositionInput]
+
+
+class RiskUpdate(BaseModel):
+    account_equity: float
+    position_size: float
+    hard_stop_pct: float
+    daily_loss_limit_pct: float
+    max_open_positions: int
+    honor_stop_on_model_trades: bool
 
 
 def _ledger() -> Ledger:
@@ -107,6 +129,85 @@ def validation() -> dict:
                 }
             )
     return {"walk_forward": report, "live": live, "calibration": calibration}
+
+
+@app.get("/api/risk")
+def get_risk() -> dict:
+    profile = load_risk()
+    return {
+        "risk": asdict(profile),
+        "hard_stop_dollars": profile.hard_stop_dollars,
+        "daily_loss_limit_dollars": profile.daily_loss_limit_dollars,
+    }
+
+
+@app.post("/api/risk")
+def update_risk(update: RiskUpdate) -> dict:
+    current = load_risk()
+    profile = replace(current, **update.model_dump())
+    if not 0 < profile.hard_stop_pct <= 1:
+        raise HTTPException(status_code=400, detail="hard_stop_pct must be between 0 and 1")
+    save_risk(profile)
+    return {"risk": asdict(profile)}
+
+
+def _latest_prices(symbols: list[str]) -> dict[str, float]:
+    if not symbols:
+        return {}
+    store = BarStore()
+    prices: dict[str, float] = {}
+    for symbol in symbols:
+        bars = store.read([symbol])
+        if not bars.empty:
+            prices[symbol] = float(bars["close"].iloc[-1])
+    return prices
+
+
+def _latest_views(horizon_minutes: int) -> dict[str, tuple[float, str]]:
+    """Most recent recorded probability and model status per symbol."""
+    with _ledger().connect() as con:
+        frame = con.execute(
+            """
+            SELECT symbol, probability, model_status FROM predictions
+            WHERE horizon_minutes = ?
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY bar_timestamp DESC) = 1
+            """,
+            [horizon_minutes],
+        ).fetch_df()
+    return {
+        str(row.symbol): (float(row.probability), str(row.model_status))
+        for row in frame.itertuples()
+    }
+
+
+@app.get("/api/positions")
+def get_positions(horizon_minutes: int = 30) -> dict:
+    positions = load_positions()
+    risk = load_risk()
+    prices = _latest_prices([p.symbol for p in positions])
+    views = _latest_views(horizon_minutes)
+    rows = []
+    for position in positions:
+        price = prices.get(position.symbol, position.avg_price)
+        probability, model_status = views.get(position.symbol, (None, "UNVALIDATED"))
+        rows.append(asdict(review(position, price, risk, probability, model_status)))
+    rows.sort(key=lambda r: (-r["urgency"], r["unrealized_pct"]))
+    return {
+        "rows": rows,
+        "attention": [r for r in rows if r["urgency"] >= 2],
+        "priced_from": "last stored 1-minute bar",
+        "horizon_minutes": horizon_minutes,
+    }
+
+
+@app.post("/api/positions")
+def update_positions(update: PositionsUpdate) -> dict:
+    positions = [
+        Position(symbol=item.symbol, quantity=item.quantity, avg_price=item.avg_price)
+        for item in update.positions
+    ]
+    save_positions(positions)
+    return {"positions": [asdict(p) for p in positions]}
 
 
 @app.get("/api/coverage")
