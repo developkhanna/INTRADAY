@@ -21,7 +21,7 @@ def attach_outcomes(
     """Score every prediction whose horizon has passed, using stored bars."""
     ledger = ledger or Ledger()
     store = store or BarStore()
-    now = now or pd.Timestamp.utcnow().tz_localize("UTC")
+    now = now or pd.Timestamp.now(tz="UTC")
 
     pending = ledger.pending(now)
     if pending.empty:
