@@ -174,7 +174,7 @@ async function loadForecasts() {
 async function loadValidation() {
   const data = await (await fetch("/api/validation")).json();
   document.getElementById("wf-rows").innerHTML = (data.walk_forward || []).map(r => `<tr>
-    <td>${r.target}</td><td>${r.status}</td><td>${(r.mean_auc ?? NaN).toFixed?.(3) ?? "—"}</td>
+    <td>${r.target}</td><td>${r.status}</td><td>${Number.isFinite(r.mean_auc) ? r.mean_auc.toFixed(3) : "n/a"}</td>
     <td>${(r.folds || []).length}</td></tr>`).join("") || `<tr><td colspan="4" class="muted">No validation run yet.</td></tr>`;
   document.getElementById("live-rows").innerHTML = (data.live || []).map(r => `<tr>
     <td>${r.model_version}</td><td>${r.horizon_minutes}m</td><td>${r.n}</td>
