@@ -131,19 +131,17 @@ def update_watchlist(update: WatchlistUpdate) -> dict:
 @app.get("/api/forecasts")
 def forecasts(limit: int = 100) -> dict:
     """Latest recorded prediction per symbol and horizon."""
-    ledger = _ledger()
-    with ledger.connect() as con:
-        frame = con.execute(
-            """
-            SELECT * FROM predictions
-            QUALIFY ROW_NUMBER() OVER (
-                PARTITION BY symbol, horizon_minutes ORDER BY bar_timestamp DESC
-            ) = 1
-            ORDER BY expected_value_pct DESC
-            LIMIT ?
-            """,
-            [limit],
-        ).fetch_df()
+    frame = _ledger().query(
+        """
+        SELECT * FROM predictions
+        QUALIFY ROW_NUMBER() OVER (
+            PARTITION BY symbol, horizon_minutes ORDER BY bar_timestamp DESC
+        ) = 1
+        ORDER BY expected_value_pct DESC
+        LIMIT ?
+        """,
+        [limit],
+    )
     return {"rows": json.loads(frame.to_json(orient="records", date_format="iso"))}
 
 
@@ -216,15 +214,14 @@ def _latest_prices(symbols: list[str]) -> dict[str, float]:
 
 def _latest_views(horizon_minutes: int) -> dict[str, tuple[float, str]]:
     """Most recent recorded probability and model status per symbol."""
-    with _ledger().connect() as con:
-        frame = con.execute(
-            """
-            SELECT symbol, probability, model_status FROM predictions
-            WHERE horizon_minutes = ?
-            QUALIFY ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY bar_timestamp DESC) = 1
-            """,
-            [horizon_minutes],
-        ).fetch_df()
+    frame = _ledger().query(
+        """
+        SELECT symbol, probability, model_status FROM predictions
+        WHERE horizon_minutes = ?
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY bar_timestamp DESC) = 1
+        """,
+        [horizon_minutes],
+    )
     return {
         str(row.symbol): (float(row.probability), str(row.model_status))
         for row in frame.itertuples()
@@ -342,12 +339,10 @@ def _predictions_today() -> int:
     midnight = dt.datetime.now(dt.timezone.utc).replace(
         hour=0, minute=0, second=0, microsecond=0, tzinfo=None
     )
-    with _ledger().connect() as con:
-        return int(
-            con.execute(
-                "SELECT COUNT(*) FROM predictions WHERE created_at >= ?", [midnight]
-            ).fetchone()[0]
-        )
+    frame = _ledger().query(
+        "SELECT COUNT(*) AS n FROM predictions WHERE created_at >= ?", [midnight]
+    )
+    return int(frame["n"].iloc[0])
 
 
 @app.get("/api/system")

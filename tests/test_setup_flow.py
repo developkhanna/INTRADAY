@@ -180,6 +180,14 @@ def test_the_dashboard_is_usable_once_recent_bars_are_in(tmp_path):
     assert "goes live" in early["usable_note"]
 
 
+def test_a_missing_bundle_is_explained_on_the_dashboard():
+    local = describe(BootstrapState(status="running", stage="dataset", models_source="local"))
+    assert "training its own" in local["models_note"]
+
+    published = describe(BootstrapState(status="done", models_source="downloaded"))
+    assert "pre-trained models" in published["models_note"]
+
+
 def test_finished_bootstrap_does_not_run_again(tmp_path):
     path = tmp_path / "bootstrap.json"
     calls: dict = {}

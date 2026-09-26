@@ -182,6 +182,15 @@ def describe(state: BootstrapState) -> dict:
     else:
         message = f"{label}…"
     usable = state.status == "done" or USABLE_AFTER in state.completed_stages
+    if state.models_source == "downloaded":
+        models_note = "Using the published pre-trained models (checksum verified)."
+    elif state.models_source == "local":
+        models_note = (
+            "No published models could be downloaded, so this Mac is training its own "
+            "from scratch. That takes hours rather than minutes."
+        )
+    else:
+        models_note = ""
     return {
         **state.to_dict(),
         "stage_label": label,
@@ -192,6 +201,7 @@ def describe(state: BootstrapState) -> dict:
         "percent": round(100 * state.current / state.total) if state.total else None,
         "stages_total": len(STAGES),
         "stage_number": STAGES.index(state.stage) + 1 if state.stage in STAGES else len(STAGES),
+        "models_note": models_note,
         "usable": usable,
         "usable_note": (
             ""
