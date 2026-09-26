@@ -62,7 +62,7 @@ def run_once(
     ledger = ledger or Ledger()
     cost_model = cost_model or CostModel()
 
-    now = pd.Timestamp.utcnow().tz_localize("UTC")
+    now = pd.Timestamp.now(tz="UTC")
     start = (now - dt.timedelta(days=WARMUP_DAYS)).to_pydatetime()
     fresh = client.bars(
         list(settings.all_symbols()),

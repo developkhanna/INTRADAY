@@ -68,13 +68,20 @@ class AlpacaConfig:
 
     @classmethod
     def from_env(cls) -> AlpacaConfig:
-        key_id = os.environ.get("ALPACA_API_KEY_ID", "")
-        secret_key = os.environ.get("ALPACA_SECRET_KEY", "")
-        if not key_id or not secret_key:
+        """Credentials from the environment, falling back to the saved file.
+
+        The import is local: `intraday.credentials` needs paths from this
+        module, so importing it at module scope would be circular.
+        """
+        from intraday.credentials import load_credentials
+
+        credentials = load_credentials()
+        if credentials is None:
             raise RuntimeError(
-                "ALPACA_API_KEY_ID and ALPACA_SECRET_KEY must be set in the environment."
+                "No Alpaca credentials. Set ALPACA_API_KEY_ID and ALPACA_SECRET_KEY, "
+                "or open http://localhost:8000/setup and paste your keys."
             )
-        return cls(key_id=key_id, secret_key=secret_key)
+        return cls(key_id=credentials.key_id, secret_key=credentials.secret_key)
 
 
 @dataclass

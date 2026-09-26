@@ -27,6 +27,10 @@ If a model has not beaten its own baseline out of sample, it is labelled
 
 ## Setup
 
+On a Mac, none of this is necessary: double-click `install/Install Intraday.command`
+and paste the Alpaca keys into the page it opens. See [install/README.md](install/README.md).
+The rest of this section is the manual path.
+
 ```bash
 pip install -e ".[dev]"
 export ALPACA_API_KEY_ID=...      # paper-account keys are enough; data only
@@ -45,6 +49,11 @@ python scripts/live_loop.py                  # predictions during the session
 
 Data lives outside the repo, in `~/.intraday` (override with `INTRADAY_DATA_DIR`).
 
+Without environment variables the dashboard serves `/setup` instead of crashing:
+keys pasted there are checked against Alpaca and stored in `~/.intraday/credentials.json`
+(mode 0600), and a background bootstrap then runs the three pipeline steps above
+by itself, resumably, with a progress banner on the dashboard.
+
 ## Layout
 
 | Path | Purpose |
@@ -56,6 +65,10 @@ Data lives outside the repo, in `~/.intraday` (override with `INTRADAY_DATA_DIR`
 | `intraday/decide.py` | cost model and the prediction → action layer |
 | `intraday/live/` | live loop, prediction ledger, outcome attachment |
 | `intraday/web/` | dashboard API and UI |
+| `intraday/credentials.py` | env-first credential loading, 0600 storage |
+| `intraday/bootstrap.py` | resumable first-run state machine |
+| `intraday/health.py` | plain-English system status and staleness |
+| `install/` | macOS double-click installer and LaunchAgents |
 
 ## Honesty rules baked into the code
 

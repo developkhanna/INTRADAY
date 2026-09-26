@@ -93,18 +93,30 @@ class BarStore:
         return out.sort_values(["symbol", "timestamp"]).reset_index(drop=True)
 
     def coverage(self) -> pd.DataFrame:
+        """What is stored per symbol, read from Parquet metadata.
+
+        Row counts come from the file footers and the span from the first and
+        last month only, so this stays fast enough to serve on every page load
+        no matter how many years are on disk.
+        """
+        import pyarrow.parquet as pq
+
         rows = []
         for symbol in self.symbols():
-            frame = self.read([symbol])
-            if frame.empty:
+            files = sorted((self.root / symbol).glob("*.parquet"))
+            if not files:
                 continue
+            span = self.span(symbol)
+            if span is None:
+                continue
+            bars = sum(pq.ParquetFile(path).metadata.num_rows for path in files)
             rows.append(
                 {
                     "symbol": symbol,
-                    "bars": len(frame),
-                    "first": frame["timestamp"].min(),
-                    "last": frame["timestamp"].max(),
-                    "sessions": frame["timestamp"].dt.tz_convert(MARKET_TZ).dt.date.nunique(),
+                    "bars": int(bars),
+                    "first": span[0],
+                    "last": span[1],
+                    "months": len(files),
                 }
             )
         return pd.DataFrame(rows)

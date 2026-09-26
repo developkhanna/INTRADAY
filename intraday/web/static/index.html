@@ -34,6 +34,15 @@
   .attention-row { padding:6px 0; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
   .warnpill { color:var(--warn); border-color:var(--warn); }
   .soundbox { margin-left:auto; color:var(--muted); font-size:13px; display:flex; gap:6px; align-items:center; }
+  .setup { background:var(--panel); border:1px solid #58a6ff; border-left-width:3px; border-radius:6px; padding:12px 16px; margin-bottom:16px; }
+  .setup h4 { margin:0 0 4px; font-size:14px; font-weight:600; }
+  .bar { height:6px; background:#21262d; border-radius:999px; overflow:hidden; margin-top:8px; }
+  .bar > div { height:100%; background:#58a6ff; width:0; transition:width .4s; }
+  .stale { background:var(--panel); border:1px solid var(--down); border-left-width:3px; border-radius:6px; padding:12px 16px; margin-bottom:16px; color:var(--down); }
+  .sysrow { display:flex; gap:10px; align-items:baseline; padding:6px 0; border-bottom:1px solid var(--line); }
+  .sysrow .dot { width:9px; height:9px; border-radius:50%; background:var(--up); flex:none; }
+  .sysrow.bad .dot { background:var(--down); }
+  .sysrow strong { min-width:150px; font-weight:500; }
 </style>
 </head>
 <body>
@@ -45,10 +54,14 @@
     <button data-tab="positions">Positions</button>
     <button data-tab="watchlist">Watchlist</button>
     <button data-tab="risk">Risk</button>
+    <button data-tab="system">System</button>
   </nav>
   <label class="soundbox"><input type="checkbox" id="sound" /> Sound when something needs a decision</label>
+  <span id="clock" class="muted" style="margin-left:auto"></span>
 </header>
 <main>
+  <div id="stale" class="stale" hidden></div>
+  <div id="setup-banner" class="setup" hidden></div>
   <div id="attention" class="attention" hidden></div>
 
   <section id="forecasts" class="active">
@@ -94,14 +107,15 @@
 
   <section id="risk">
     <p class="muted">
-      The hard stop is the loss you will never exceed. The working stop is the normal exit,
+      The hard stop is the loss at which the engine tells you to get out, whatever else it thinks;
+      a gap or a fast move can still take you past it. The working stop is the normal exit,
       set from the stock's own minute-by-minute volatility.
     </p>
     <div class="grid">
       <label>Account equity ($)<input id="account_equity" type="number" step="100" /></label>
       <label>Position size ($)<input id="position_size" type="number" step="100" /></label>
-      <label>Hard stop (% of position)<input id="hard_stop_pct" type="number" step="0.01" /></label>
-      <label>Daily loss limit (% of account)<input id="daily_loss_limit_pct" type="number" step="0.005" /></label>
+      <label>Hard stop, percent of the position<input id="hard_stop_pct" type="number" step="1" /></label>
+      <label>Daily loss limit, percent of the account<input id="daily_loss_limit_pct" type="number" step="0.5" /></label>
       <label>Max open positions<input id="max_open_positions" type="number" step="1" /></label>
       <label>Obey working stop on the engine's own trades
         <input id="honor_stop_on_model_trades" type="checkbox" /></label>
@@ -110,8 +124,19 @@
     <p id="risk-status" class="muted"></p>
   </section>
 
+  <section id="system">
+    <p class="muted">Everything this Mac is or is not doing right now.</p>
+    <div id="system-rows"></div>
+    <h3>Sleep</h3>
+    <label class="soundbox"><input type="checkbox" id="keep-awake" /> <span id="keep-awake-label"></span></label>
+    <p id="keep-awake-status" class="muted"></p>
+    <h3>First-time setup</h3>
+    <p id="bootstrap-detail" class="muted"></p>
+    <button class="primary" id="resume-setup" hidden>Resume setup</button>
+  </section>
+
   <section id="watchlist">
-    <p class="muted">One symbol per line. Saving updates data collection and features; run the sync to backfill new names.</p>
+    <p class="muted">One symbol per line. New names are backfilled automatically the next time data is collected.</p>
     <textarea id="symbols"></textarea>
     <button class="primary" id="save">Save watchlist</button>
     <p id="wl-status" class="muted"></p>
@@ -134,7 +159,7 @@ async function loadForecasts() {
   const body = document.getElementById("forecast-rows");
   const unvalidated = rows.filter(r => r.model_status !== "VALIDATED").length;
   document.getElementById("status").textContent = rows.length === 0
-    ? "No predictions recorded yet. Train the models and start the live loop."
+    ? "No predictions recorded yet. The engine records them itself once setup finishes and the US market is open."
     : unvalidated > 0
       ? `${unvalidated} of ${rows.length} predictions come from models that have NOT beaten their baseline out of sample — shown for monitoring only, not for trading.`
       : `${rows.length} predictions from validated models.`;
@@ -149,7 +174,7 @@ async function loadForecasts() {
 async function loadValidation() {
   const data = await (await fetch("/api/validation")).json();
   document.getElementById("wf-rows").innerHTML = (data.walk_forward || []).map(r => `<tr>
-    <td>${r.target}</td><td>${r.status}</td><td>${(r.mean_auc ?? NaN).toFixed?.(3) ?? "—"}</td>
+    <td>${r.target}</td><td>${r.status}</td><td>${Number.isFinite(r.mean_auc) ? r.mean_auc.toFixed(3) : "n/a"}</td>
     <td>${(r.folds || []).length}</td></tr>`).join("") || `<tr><td colspan="4" class="muted">No validation run yet.</td></tr>`;
   document.getElementById("live-rows").innerHTML = (data.live || []).map(r => `<tr>
     <td>${r.model_version}</td><td>${r.horizon_minutes}m</td><td>${r.n}</td>
@@ -238,10 +263,13 @@ document.getElementById("save-positions").onclick = async () => {
 };
 
 const RISK_FIELDS = ["account_equity", "position_size", "hard_stop_pct", "daily_loss_limit_pct", "max_open_positions"];
+// These two are stored as fractions but shown as the percentages they are.
+const RISK_PERCENTS = ["hard_stop_pct", "daily_loss_limit_pct"];
 
 async function loadRisk() {
   const data = await (await fetch("/api/risk")).json();
-  RISK_FIELDS.forEach(f => document.getElementById(f).value = data.risk[f]);
+  RISK_FIELDS.forEach(f => document.getElementById(f).value =
+    RISK_PERCENTS.includes(f) ? +(data.risk[f] * 100).toFixed(2) : data.risk[f]);
   document.getElementById("honor_stop_on_model_trades").checked = data.risk.honor_stop_on_model_trades;
   document.getElementById("risk-status").textContent =
     `Hard stop $${data.hard_stop_dollars.toFixed(0)} per position; stop suggesting new trades after $${data.daily_loss_limit_dollars.toFixed(0)} lost in a day.`;
@@ -249,7 +277,10 @@ async function loadRisk() {
 
 document.getElementById("save-risk").onclick = async () => {
   const body = {honor_stop_on_model_trades: document.getElementById("honor_stop_on_model_trades").checked};
-  RISK_FIELDS.forEach(f => body[f] = +document.getElementById(f).value);
+  RISK_FIELDS.forEach(f => {
+    const value = +document.getElementById(f).value;
+    body[f] = RISK_PERCENTS.includes(f) ? value / 100 : value;
+  });
   const res = await fetch("/api/risk", {
     method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)
   });
@@ -257,8 +288,67 @@ document.getElementById("save-risk").onclick = async () => {
   if (res.ok) { loadRisk(); loadPositions(); }
 };
 
-loadForecasts(); loadValidation(); loadWatchlist(); loadPositions(); loadRisk();
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"})[c]);
+
+async function loadSystem() {
+  let data;
+  try { data = await (await fetch("/api/system")).json(); } catch (e) { return; }
+
+  const times = data.clock || {};
+  document.getElementById("clock").textContent = times.local
+    ? `${times.local} ${times.local_label} · ${times.new_york} New York · market ${times.market_open ? "open" : "closed"} ${times.session_local} your time`
+    : "";
+
+  const awake = data.keep_awake || {};
+  const awakeBox = document.getElementById("keep-awake");
+  awakeBox.checked = !!awake.enabled;
+  awakeBox.disabled = !awake.supported;
+  document.getElementById("keep-awake-label").textContent = awake.label || "";
+  document.getElementById("keep-awake-status").textContent = awake.text || "";
+
+  const stale = document.getElementById("stale");
+  stale.hidden = (data.warnings || []).length === 0;
+  stale.textContent = (data.warnings || []).join(" ");
+
+  document.getElementById("system-rows").innerHTML = (data.items || []).map(i => `
+    <div class="sysrow ${i.ok ? "" : "bad"}"><span class="dot"></span>
+    <strong>${esc(i.name)}</strong><span class="muted">${esc(i.text)}</span></div>`).join("");
+
+  const b = data.bootstrap || {};
+  const banner = document.getElementById("setup-banner");
+  const running = b.status === "running";
+  banner.hidden = b.status === "done";
+  banner.innerHTML = `<h4>First-time setup — step ${esc(b.stage_number)} of ${esc(b.stages_total)}</h4>
+    <div>${esc(b.message)}</div>
+    <div class="muted">${esc(b.detail)}${running ? " · time left: " + esc(b.eta_human) : ""}</div>
+    ${b.percent != null ? `<div class="bar"><div style="width:${Number(b.percent) || 0}%"></div></div>` : ""}
+    ${b.models_note ? `<div class="muted" style="margin-top:6px">${esc(b.models_note)}</div>` : ""}
+    <div class="muted" style="margin-top:6px">The tabs above keep working while this runs.</div>`;
+
+  document.getElementById("bootstrap-detail").textContent =
+    `${b.message || ""} ${running ? "Time left: " + b.eta_human + "." : ""} ${b.models_note || ""}`.trim();
+  document.getElementById("resume-setup").hidden = !b.resumable || !data.credentials_ok;
+}
+
+document.getElementById("keep-awake").onchange = async (event) => {
+  const status = document.getElementById("keep-awake-status");
+  status.textContent = "Applying…";
+  const res = await fetch("/api/keep-awake", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({enabled: event.target.checked})
+  });
+  const body = await res.json();
+  status.textContent = body.text || "";
+};
+
+document.getElementById("resume-setup").onclick = async () => {
+  await fetch("/api/bootstrap", {method: "POST"});
+  loadSystem();
+};
+
+loadForecasts(); loadValidation(); loadWatchlist(); loadPositions(); loadRisk(); loadSystem();
 setInterval(() => { loadForecasts(); loadPositions(); }, 60000);
+setInterval(loadSystem, 10000);
 </script>
 </body>
 </html>
