@@ -34,6 +34,15 @@
   .attention-row { padding:6px 0; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
   .warnpill { color:var(--warn); border-color:var(--warn); }
   .soundbox { margin-left:auto; color:var(--muted); font-size:13px; display:flex; gap:6px; align-items:center; }
+  .setup { background:var(--panel); border:1px solid #58a6ff; border-left-width:3px; border-radius:6px; padding:12px 16px; margin-bottom:16px; }
+  .setup h4 { margin:0 0 4px; font-size:14px; font-weight:600; }
+  .bar { height:6px; background:#21262d; border-radius:999px; overflow:hidden; margin-top:8px; }
+  .bar > div { height:100%; background:#58a6ff; width:0; transition:width .4s; }
+  .stale { background:var(--panel); border:1px solid var(--down); border-left-width:3px; border-radius:6px; padding:12px 16px; margin-bottom:16px; color:var(--down); }
+  .sysrow { display:flex; gap:10px; align-items:baseline; padding:6px 0; border-bottom:1px solid var(--line); }
+  .sysrow .dot { width:9px; height:9px; border-radius:50%; background:var(--up); flex:none; }
+  .sysrow.bad .dot { background:var(--down); }
+  .sysrow strong { min-width:150px; font-weight:500; }
 </style>
 </head>
 <body>
@@ -45,10 +54,13 @@
     <button data-tab="positions">Positions</button>
     <button data-tab="watchlist">Watchlist</button>
     <button data-tab="risk">Risk</button>
+    <button data-tab="system">System</button>
   </nav>
   <label class="soundbox"><input type="checkbox" id="sound" /> Sound when something needs a decision</label>
 </header>
 <main>
+  <div id="stale" class="stale" hidden></div>
+  <div id="setup-banner" class="setup" hidden></div>
   <div id="attention" class="attention" hidden></div>
 
   <section id="forecasts" class="active">
@@ -108,6 +120,14 @@
     </div>
     <button class="primary" id="save-risk">Save risk settings</button>
     <p id="risk-status" class="muted"></p>
+  </section>
+
+  <section id="system">
+    <p class="muted">Everything this Mac is or is not doing right now.</p>
+    <div id="system-rows"></div>
+    <h3>First-time setup</h3>
+    <p id="bootstrap-detail" class="muted"></p>
+    <button class="primary" id="resume-setup" hidden>Resume setup</button>
   </section>
 
   <section id="watchlist">
@@ -257,8 +277,43 @@ document.getElementById("save-risk").onclick = async () => {
   if (res.ok) { loadRisk(); loadPositions(); }
 };
 
-loadForecasts(); loadValidation(); loadWatchlist(); loadPositions(); loadRisk();
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"})[c]);
+
+async function loadSystem() {
+  let data;
+  try { data = await (await fetch("/api/system")).json(); } catch (e) { return; }
+
+  const stale = document.getElementById("stale");
+  stale.hidden = (data.warnings || []).length === 0;
+  stale.textContent = (data.warnings || []).join(" ");
+
+  document.getElementById("system-rows").innerHTML = (data.items || []).map(i => `
+    <div class="sysrow ${i.ok ? "" : "bad"}"><span class="dot"></span>
+    <strong>${esc(i.name)}</strong><span class="muted">${esc(i.text)}</span></div>`).join("");
+
+  const b = data.bootstrap || {};
+  const banner = document.getElementById("setup-banner");
+  const running = b.status === "running";
+  banner.hidden = b.status === "done";
+  banner.innerHTML = `<h4>First-time setup — step ${esc(b.stage_number)} of ${esc(b.stages_total)}</h4>
+    <div>${esc(b.message)}</div>
+    <div class="muted">${esc(b.detail)}${running ? " · time left: " + esc(b.eta_human) : ""}</div>
+    ${b.percent != null ? `<div class="bar"><div style="width:${Number(b.percent) || 0}%"></div></div>` : ""}
+    <div class="muted" style="margin-top:6px">The tabs above keep working while this runs.</div>`;
+
+  document.getElementById("bootstrap-detail").textContent =
+    `${b.message || ""} ${running ? "Time left: " + b.eta_human + "." : ""}`.trim();
+  document.getElementById("resume-setup").hidden = !b.resumable || !data.credentials_ok;
+}
+
+document.getElementById("resume-setup").onclick = async () => {
+  await fetch("/api/bootstrap", {method: "POST"});
+  loadSystem();
+};
+
+loadForecasts(); loadValidation(); loadWatchlist(); loadPositions(); loadRisk(); loadSystem();
 setInterval(() => { loadForecasts(); loadPositions(); }, 60000);
+setInterval(loadSystem, 10000);
 </script>
 </body>
 </html>
