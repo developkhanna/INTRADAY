@@ -37,12 +37,17 @@ DEFAULT_SECTOR_MAP: dict[str, str] = {
     "META": "XLC", "GOOGL": "XLC", "NFLX": "XLC",
     "COIN": "XLF", "HOOD": "XLF", "JPM": "XLF",
     "NBIS": "XLK", "UBER": "XLY",
+    "ZS": "XLK", "NET": "XLK", "NOW": "XLK", "CRWV": "XLK", "FTNT": "XLK",
+    "CSCO": "XLK", "DELL": "XLK", "HPE": "XLK", "STX": "XLK", "WDC": "XLK",
+    "TER": "XLK", "LITE": "XLK", "MRVL": "XLK", "VRT": "XLI", "WIX": "XLK",
 }
 
 DEFAULT_UNIVERSE: tuple[str, ...] = (
     "AAPL", "MSFT", "NVDA", "AMD", "AMZN", "META", "GOOGL", "TSLA",
     "AVGO", "MU", "TSM", "SHOP", "NBIS", "ARM", "LRCX", "AMAT",
     "PLTR", "COIN", "SMCI", "NFLX",
+    "ZS", "NET", "NOW", "CRWV", "FTNT", "CSCO", "DELL", "HPE",
+    "STX", "WDC", "TER", "LITE", "MRVL", "VRT", "WIX", "INTC",
 )
 
 
