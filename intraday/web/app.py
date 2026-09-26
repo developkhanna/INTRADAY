@@ -163,16 +163,41 @@ def _latest_prices(symbols: list[str]) -> dict[str, float]:
     return prices
 
 
+def _latest_views(horizon_minutes: int) -> dict[str, tuple[float, str]]:
+    """Most recent recorded probability and model status per symbol."""
+    with _ledger().connect() as con:
+        frame = con.execute(
+            """
+            SELECT symbol, probability, model_status FROM predictions
+            WHERE horizon_minutes = ?
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY bar_timestamp DESC) = 1
+            """,
+            [horizon_minutes],
+        ).fetch_df()
+    return {
+        str(row.symbol): (float(row.probability), str(row.model_status))
+        for row in frame.itertuples()
+    }
+
+
 @app.get("/api/positions")
-def get_positions() -> dict:
+def get_positions(horizon_minutes: int = 30) -> dict:
     positions = load_positions()
     risk = load_risk()
     prices = _latest_prices([p.symbol for p in positions])
+    views = _latest_views(horizon_minutes)
     rows = []
     for position in positions:
         price = prices.get(position.symbol, position.avg_price)
-        rows.append(asdict(review(position, price, risk)))
-    return {"rows": rows, "priced_from": "last stored 1-minute bar"}
+        probability, model_status = views.get(position.symbol, (None, "UNVALIDATED"))
+        rows.append(asdict(review(position, price, risk, probability, model_status)))
+    rows.sort(key=lambda r: (-r["urgency"], r["unrealized_pct"]))
+    return {
+        "rows": rows,
+        "attention": [r for r in rows if r["urgency"] >= 2],
+        "priced_from": "last stored 1-minute bar",
+        "horizon_minutes": horizon_minutes,
+    }
 
 
 @app.post("/api/positions")

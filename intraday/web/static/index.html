@@ -30,6 +30,10 @@
   .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; max-width:760px; margin-top:12px; }
   .grid label { display:flex; flex-direction:column; gap:4px; color:var(--muted); font-size:13px; }
   .grid input[type=number] { background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:8px; }
+  .attention { background:var(--panel); border:1px solid var(--down); border-left-width:3px; border-radius:6px; padding:8px 16px; margin-bottom:20px; }
+  .attention-row { padding:6px 0; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .warnpill { color:var(--warn); border-color:var(--warn); }
+  .soundbox { margin-left:auto; color:var(--muted); font-size:13px; display:flex; gap:6px; align-items:center; }
 </style>
 </head>
 <body>
@@ -42,8 +46,11 @@
     <button data-tab="watchlist">Watchlist</button>
     <button data-tab="risk">Risk</button>
   </nav>
+  <label class="soundbox"><input type="checkbox" id="sound" /> Sound when something needs a decision</label>
 </header>
 <main>
+  <div id="attention" class="attention" hidden></div>
+
   <section id="forecasts" class="active">
     <div class="banner" id="status">Loading…</div>
     <table><thead><tr>
@@ -76,7 +83,7 @@
     </div>
     <table><thead><tr>
       <th>Symbol</th><th>Qty</th><th>Avg price</th><th>Last</th><th>P&amp;L</th>
-      <th>Hard exit at</th><th>Action</th><th>Why (plain English)</th>
+      <th>Status</th><th>Hard exit at</th><th>Action</th><th>Why (plain English)</th>
     </tr></thead><tbody id="position-rows"></tbody></table>
     <h3>Edit positions</h3>
     <p class="muted">One per line: <code>SYMBOL, quantity, average price</code></p>
@@ -180,12 +187,42 @@ async function loadPositions() {
     <td>${r.symbol}</td><td>${r.quantity}</td><td>${r.avg_price.toFixed(2)}</td>
     <td>${r.price.toFixed(2)}</td>
     <td class="${r.unrealized_pct >= 0 ? "buy" : "no"}">${pct(r.unrealized_pct)} (${r.unrealized_dollars.toFixed(0)})</td>
+    <td><span class="pill ${statusClass(r.status)}">${r.status}</span></td>
     <td>${r.hard_stop_price.toFixed(2)}</td>
     <td><span class="pill ${r.action === "HOLD" ? "wait" : "no"}">${r.action}</span></td>
     <td class="eli5">${r.eli5}</td></tr>`).join("")
-    || `<tr><td colspan="8" class="muted">No positions recorded.</td></tr>`;
+    || `<tr><td colspan="9" class="muted">No positions recorded.</td></tr>`;
   document.getElementById("positions-text").value =
     rows.map(r => `${r.symbol}, ${r.quantity}, ${r.avg_price}`).join("\n");
+  renderAttention(data.attention || []);
+}
+
+function statusClass(status) {
+  return status === "EXIT NOW" ? "no" : status === "DECIDE" ? "warnpill" : status === "WATCHING" ? "wait" : "buy";
+}
+
+let lastAttention = 0;
+
+function renderAttention(rows) {
+  const box = document.getElementById("attention");
+  box.hidden = rows.length === 0;
+  box.innerHTML = rows.map(r => `<div class="attention-row">
+    <span class="pill ${statusClass(r.status)}">${r.status}</span>
+    <strong>${r.symbol}</strong> ${pct(r.unrealized_pct)}
+    <span class="muted">${r.reason}. Out no matter what at $${r.hard_stop_price.toFixed(2)}.</span>
+  </div>`).join("");
+  document.title = rows.length ? `(${rows.length}) Intraday — needs you` : "Intraday prediction engine";
+  if (rows.length > lastAttention && document.getElementById("sound").checked) beep();
+  lastAttention = rows.length;
+}
+
+function beep() {
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const osc = ctx.createOscillator();
+  osc.frequency.value = 660;
+  osc.connect(ctx.destination);
+  osc.start();
+  setTimeout(() => { osc.stop(); ctx.close(); }, 200);
 }
 
 document.getElementById("save-positions").onclick = async () => {
@@ -221,7 +258,7 @@ document.getElementById("save-risk").onclick = async () => {
 };
 
 loadForecasts(); loadValidation(); loadWatchlist(); loadPositions(); loadRisk();
-setInterval(loadForecasts, 60000);
+setInterval(() => { loadForecasts(); loadPositions(); }, 60000);
 </script>
 </body>
 </html>

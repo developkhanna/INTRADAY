@@ -43,6 +43,9 @@ class PositionView:
     unrealized_pct: float
     unrealized_dollars: float
     hard_stop_price: float
+    distance_to_hard_stop_pct: float
+    status: str
+    urgency: int
     action: str
     reason: str
     eli5: str
@@ -57,6 +60,7 @@ def review(
     probability: float | None = None,
     model_status: str = "UNVALIDATED",
     hold_threshold: float = 0.5,
+    watch_drawdown_pct: float = 0.02,
 ) -> PositionView:
     """Judge one held position: EXIT NOW, SELL, TRIM, or HOLD."""
     pnl_pct = position.unrealized_pct(price)
@@ -90,6 +94,19 @@ def review(
             f"${hard_stop_price:.2f}."
         )
 
+    if action == "EXIT NOW":
+        status, urgency = "EXIT NOW", 3
+    elif action == "SELL":
+        status, urgency = "DECIDE", 2
+    elif pnl_pct <= -watch_drawdown_pct:
+        status, urgency = "WATCHING", 1
+    else:
+        status, urgency = "OK", 0
+
+    distance_to_hard_stop = (
+        price / hard_stop_price - 1.0 if hard_stop_price > 0 else float("nan")
+    )
+
     return PositionView(
         symbol=position.symbol,
         quantity=position.quantity,
@@ -98,6 +115,9 @@ def review(
         unrealized_pct=float(pnl_pct),
         unrealized_dollars=float(position.unrealized_dollars(price)),
         hard_stop_price=float(hard_stop_price),
+        distance_to_hard_stop_pct=float(distance_to_hard_stop),
+        status=status,
+        urgency=urgency,
         action=action,
         reason=reason,
         eli5=eli5,

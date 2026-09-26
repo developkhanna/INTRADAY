@@ -48,3 +48,12 @@ def test_validated_bullish_model_holds(risk: RiskProfile) -> None:
     position = Position("ZS", quantity=10, avg_price=200.0)
     view = review(position, price=190.0, risk=risk, probability=0.65, model_status="VALIDATED")
     assert view.action == "HOLD"
+
+
+def test_status_escalates_with_drawdown(risk: RiskProfile) -> None:
+    position = Position("ZS", quantity=10, avg_price=200.0)
+    assert review(position, 201.0, risk).status == "OK"
+    assert review(position, 190.0, risk).status == "WATCHING"
+    decide = review(position, 190.0, risk, probability=0.2, model_status="VALIDATED")
+    assert (decide.status, decide.urgency) == ("DECIDE", 2)
+    assert review(position, 150.0, risk).status == "EXIT NOW"
