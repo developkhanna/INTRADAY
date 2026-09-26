@@ -26,6 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from intraday import health
+from intraday.awake import keeper as awake_keeper
 from intraday.bootstrap import runner as bootstrap_runner
 from intraday.config import MODEL_DIR, load_watchlist, save_watchlist, settings_from_watchlist
 from intraday.credentials import load_credentials, mask, save_credentials, verify_credentials
@@ -48,6 +49,10 @@ class WatchlistUpdate(BaseModel):
 class CredentialsInput(BaseModel):
     key_id: str
     secret_key: str
+
+
+class KeepAwakeInput(BaseModel):
+    enabled: bool
 
 
 class PositionInput(BaseModel):
@@ -90,7 +95,9 @@ async def lifespan(_: FastAPI):
     threading.Thread(
         target=_check_credentials_and_resume, name="intraday-startup", daemon=True
     ).start()
+    awake_keeper().supervise()
     yield
+    awake_keeper().shutdown()
 
 
 app = FastAPI(title="Intraday prediction engine", lifespan=lifespan)
@@ -301,6 +308,17 @@ def save_credentials_endpoint(payload: CredentialsInput) -> dict:
     }
 
 
+@app.get("/api/keep-awake")
+def keep_awake_status() -> dict:
+    return awake_keeper().status()
+
+
+@app.post("/api/keep-awake")
+def keep_awake_set(payload: KeepAwakeInput) -> dict:
+    """Switching this off kills the caffeinate process now, not at next login."""
+    return awake_keeper().set_enabled(payload.enabled)
+
+
 @app.get("/api/bootstrap")
 def bootstrap_status() -> dict:
     return bootstrap_runner().status()
@@ -338,6 +356,7 @@ def system() -> dict:
         last_bar=_last_bar_timestamp(), predictions_today=_predictions_today()
     )
     snapshot["bootstrap"] = bootstrap_runner().status()
+    snapshot["keep_awake"] = awake_keeper().status()
     return snapshot
 
 

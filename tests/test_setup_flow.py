@@ -104,14 +104,20 @@ def test_config_raises_a_helpful_error_without_credentials(tmp_path, monkeypatch
 # -- bootstrap state machine ----------------------------------------------
 
 
-def fake_steps(calls: dict, fail_on: str | None = None) -> BootstrapSteps:
+def fake_steps(
+    calls: dict, fail_on: str | None = None, bundle: tuple[bool, str] = (True, "bundle ok")
+) -> BootstrapSteps:
     def symbols() -> list[str]:
         return ["AAA", "BBB", "CCC"]
 
-    def sync_symbol(symbol: str) -> None:
-        if fail_on == "history":
+    def sync_symbol(symbol: str, years: float) -> None:
+        if fail_on == "sync":
             raise RuntimeError("network down")
-        calls.setdefault("synced", []).append(symbol)
+        calls.setdefault("synced", []).append((symbol, round(years, 4)))
+
+    def fetch_models() -> tuple[bool, str]:
+        calls["fetch_models"] = calls.get("fetch_models", 0) + 1
+        return bundle
 
     def build_dataset() -> int:
         if fail_on == "dataset":
@@ -126,23 +132,52 @@ def fake_steps(calls: dict, fail_on: str | None = None) -> BootstrapSteps:
         return 2
 
     return BootstrapSteps(
-        symbols=symbols, sync_symbol=sync_symbol, build_dataset=build_dataset, train=train
+        symbols=symbols,
+        sync_symbol=sync_symbol,
+        build_dataset=build_dataset,
+        train=train,
+        fetch_models=fetch_models,
     )
 
 
-def test_bootstrap_runs_the_three_stages_in_order(tmp_path):
+def test_published_models_skip_local_training(tmp_path):
+    """Recent bars first, three years behind them, and no hours-long retrain."""
     calls: dict = {}
-    runner = BootstrapRunner(path=tmp_path / "bootstrap.json", steps=fake_steps(calls))
-    status = runner.start(background=False)
+    path = tmp_path / "bootstrap.json"
+    status = BootstrapRunner(path=path, steps=fake_steps(calls)).start(background=False)
 
     assert status["status"] == "done"
-    assert calls["synced"] == ["AAA", "BBB", "CCC"]
+    assert calls["fetch_models"] == 1
+    windows = [years for _, years in calls["synced"]]
+    assert windows == [round(5 / 365, 4)] * 3 + [3.0] * 3
+    assert "dataset" not in calls and "train" not in calls
+
+    state = load_state(path)
+    assert state.completed_stages == ["models", "recent", "backfill"]
+    assert state.skipped_stages == ["dataset", "training"]
+    assert state.models_source == "downloaded"
+
+
+def test_a_missing_bundle_falls_back_to_training_on_this_machine(tmp_path):
+    calls: dict = {}
+    path = tmp_path / "bootstrap.json"
+    steps = fake_steps(calls, bundle=(False, "No pre-trained models are published yet."))
+    status = BootstrapRunner(path=path, steps=steps).start(background=False)
+
+    assert status["status"] == "done"
     assert calls["dataset"] == 1 and calls["train"] == 1
-    assert load_state(tmp_path / "bootstrap.json").completed_stages == [
-        "history",
-        "dataset",
-        "training",
-    ]
+    assert load_state(path).models_source == "local"
+
+
+def test_the_dashboard_is_usable_once_recent_bars_are_in(tmp_path):
+    running = describe(
+        BootstrapState(status="running", stage="backfill", completed_stages=["models", "recent"])
+    )
+    assert running["usable"] is True
+
+    early = describe(BootstrapState(status="running", stage="recent", completed_stages=["models"]))
+    assert early["usable"] is False
+    assert "goes live" in early["usable_note"]
 
 
 def test_finished_bootstrap_does_not_run_again(tmp_path):
@@ -158,7 +193,12 @@ def test_finished_bootstrap_does_not_run_again(tmp_path):
 def test_bootstrap_resumes_from_the_first_unfinished_stage(tmp_path):
     path = tmp_path / "bootstrap.json"
     save_state(
-        BootstrapState(status="interrupted", stage="dataset", completed_stages=["history"]),
+        BootstrapState(
+            status="interrupted",
+            stage="backfill",
+            completed_stages=["models", "recent"],
+            models_source="downloaded",
+        ),
         path,
     )
 
@@ -166,25 +206,25 @@ def test_bootstrap_resumes_from_the_first_unfinished_stage(tmp_path):
     status = BootstrapRunner(path=path, steps=fake_steps(calls)).start(background=False)
 
     assert status["status"] == "done"
-    assert "synced" not in calls  # history was already done, nothing re-downloaded
-    assert calls["dataset"] == 1
+    assert "fetch_models" not in calls  # already installed, not downloaded twice
+    assert [years for _, years in calls["synced"]] == [3.0] * 3
 
 
 def test_failure_is_recorded_and_stays_resumable(tmp_path):
     path = tmp_path / "bootstrap.json"
-    runner = BootstrapRunner(path=path, steps=fake_steps({}, fail_on="dataset"))
-    status = runner.start(background=False)
+    steps = fake_steps({}, fail_on="sync", bundle=(False, "no bundle"))
+    status = BootstrapRunner(path=path, steps=steps).start(background=False)
 
     assert status["status"] == "failed"
-    assert "no bars" in status["error"]
+    assert "network down" in status["error"]
     assert status["resumable"] is True
-    assert load_state(path).completed_stages == ["history"]
+    assert load_state(path).completed_stages == ["models"]
 
 
 def test_a_run_whose_process_vanished_is_reported_as_interrupted():
     state = BootstrapState(
         status="running",
-        stage="history",
+        stage="recent",
         updated_at="2020-01-01T00:00:00+00:00",
         pid=999999,
     )
@@ -192,10 +232,10 @@ def test_a_run_whose_process_vanished_is_reported_as_interrupted():
 
 
 def test_progress_is_never_invented():
-    fresh = describe(BootstrapState(status="running", stage="history", current=0, total=36))
+    fresh = describe(BootstrapState(status="running", stage="backfill", current=0, total=36))
     assert fresh["eta_human"] == "estimating…"
     assert fresh["percent"] == 0
-    assert fresh["message"] == "Downloading market history: 0 of 36"
+    assert fresh["message"] == "Filling in three years of history: 0 of 36"
 
 
 # -- setup page and health -------------------------------------------------
@@ -269,6 +309,7 @@ def test_system_view_explains_what_is_missing(client):
     body = client.get("/api/system").json()
     names = [item["name"] for item in body["items"]]
     assert names == [
+        "Market hours",
         "Dashboard",
         "Alpaca keys",
         "Live loop",

@@ -57,6 +57,7 @@
     <button data-tab="system">System</button>
   </nav>
   <label class="soundbox"><input type="checkbox" id="sound" /> Sound when something needs a decision</label>
+  <span id="clock" class="muted" style="margin-left:auto"></span>
 </header>
 <main>
   <div id="stale" class="stale" hidden></div>
@@ -125,6 +126,9 @@
   <section id="system">
     <p class="muted">Everything this Mac is or is not doing right now.</p>
     <div id="system-rows"></div>
+    <h3>Sleep</h3>
+    <label class="soundbox"><input type="checkbox" id="keep-awake" /> <span id="keep-awake-label"></span></label>
+    <p id="keep-awake-status" class="muted"></p>
     <h3>First-time setup</h3>
     <p id="bootstrap-detail" class="muted"></p>
     <button class="primary" id="resume-setup" hidden>Resume setup</button>
@@ -283,6 +287,18 @@ async function loadSystem() {
   let data;
   try { data = await (await fetch("/api/system")).json(); } catch (e) { return; }
 
+  const times = data.clock || {};
+  document.getElementById("clock").textContent = times.local
+    ? `${times.local} ${times.local_label} · ${times.new_york} New York · market ${times.market_open ? "open" : "closed"} ${times.session_local} your time`
+    : "";
+
+  const awake = data.keep_awake || {};
+  const awakeBox = document.getElementById("keep-awake");
+  awakeBox.checked = !!awake.enabled;
+  awakeBox.disabled = !awake.supported;
+  document.getElementById("keep-awake-label").textContent = awake.label || "";
+  document.getElementById("keep-awake-status").textContent = awake.text || "";
+
   const stale = document.getElementById("stale");
   stale.hidden = (data.warnings || []).length === 0;
   stale.textContent = (data.warnings || []).join(" ");
@@ -305,6 +321,17 @@ async function loadSystem() {
     `${b.message || ""} ${running ? "Time left: " + b.eta_human + "." : ""}`.trim();
   document.getElementById("resume-setup").hidden = !b.resumable || !data.credentials_ok;
 }
+
+document.getElementById("keep-awake").onchange = async (event) => {
+  const status = document.getElementById("keep-awake-status");
+  status.textContent = "Applying…";
+  const res = await fetch("/api/keep-awake", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({enabled: event.target.checked})
+  });
+  const body = await res.json();
+  status.textContent = body.text || "";
+};
 
 document.getElementById("resume-setup").onclick = async () => {
   await fetch("/api/bootstrap", {method: "POST"});

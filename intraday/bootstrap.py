@@ -1,10 +1,21 @@
-"""First-run bootstrap: download history, build the dataset, train the models.
+"""First-run bootstrap: usable in minutes, complete in the background.
 
 The dashboard runs this in a background thread the first time credentials
 exist, so a non-technical owner never has to type a command. It is a small
 state machine persisted to `~/.intraday/bootstrap.json`:
 
-    history -> dataset -> training -> done
+    models -> recent -> backfill -> dataset -> training -> done
+             ^^^^^^ dashboard is live from here
+
+The first two stages are the ones the owner waits for: pre-trained models are
+downloaded from a published release (checksum-verified), and only the last few
+trading days of bars are synced. That is a few minutes, and the engine can
+predict. The three-year backfill then runs behind the live dashboard.
+
+`dataset` and `training` exist for the case where no published bundle could be
+installed: then, and only then, the models are trained on this machine from the
+full history. Skipping them when a verified bundle is present is recorded in
+the state, not hidden.
 
 Every stage is resumable. Closing the laptop mid-run leaves a stale "running"
 state, which is reconciled to "interrupted" on the next start and picked up
@@ -33,14 +44,22 @@ logger = logging.getLogger(__name__)
 
 STATE_FILE = DATA_DIR / "bootstrap.json"
 
-STAGES = ("history", "dataset", "training")
+STAGES = ("models", "recent", "backfill", "dataset", "training")
+
+# Stages after this one run behind an already-usable dashboard.
+USABLE_AFTER = "recent"
 
 STAGE_LABELS = {
-    "history": "Downloading market history",
+    "models": "Getting the trained models",
+    "recent": "Downloading the last few trading days",
+    "backfill": "Filling in three years of history",
     "dataset": "Building the training table",
-    "training": "Training models",
+    "training": "Training models on this Mac",
     "done": "Ready",
 }
+
+# Enough bars for the features the live loop needs, without the 40-minute wait.
+RECENT_DAYS = 5
 
 # A heartbeat older than this means the process that owned the run is gone
 # (laptop closed, crash, restart).
@@ -50,12 +69,14 @@ HEARTBEAT_TIMEOUT_SECONDS = 300
 @dataclass
 class BootstrapState:
     status: str = "not_started"  # not_started | running | done | failed | interrupted
-    stage: str = "history"
+    stage: str = "models"
     current: int = 0
     total: int = 0
     detail: str = ""
     error: str = ""
     completed_stages: list[str] = field(default_factory=list)
+    skipped_stages: list[str] = field(default_factory=list)
+    models_source: str = ""  # "downloaded" | "local" | ""
     started_at: str = ""
     updated_at: str = ""
     stage_started_at: str = ""
@@ -149,7 +170,7 @@ def describe(state: BootstrapState) -> dict:
     remaining = estimate_remaining_seconds(state)
     label = STAGE_LABELS.get(state.stage, state.stage)
     if state.status == "done":
-        message = "Setup finished. The engine has history, a dataset and trained models."
+        message = "Setup finished. History is in place and the models are loaded."
     elif state.status == "not_started":
         message = "First-time setup has not started yet."
     elif state.status == "failed":
@@ -160,6 +181,7 @@ def describe(state: BootstrapState) -> dict:
         message = f"{label}: {state.current} of {state.total}"
     else:
         message = f"{label}…"
+    usable = state.status == "done" or USABLE_AFTER in state.completed_stages
     return {
         **state.to_dict(),
         "stage_label": label,
@@ -170,6 +192,12 @@ def describe(state: BootstrapState) -> dict:
         "percent": round(100 * state.current / state.total) if state.total else None,
         "stages_total": len(STAGES),
         "stage_number": STAGES.index(state.stage) + 1 if state.stage in STAGES else len(STAGES),
+        "usable": usable,
+        "usable_note": (
+            ""
+            if usable
+            else "The dashboard goes live as soon as the last few trading days are in."
+        ),
     }
 
 
@@ -178,22 +206,31 @@ ProgressHook = Callable[[int, int, str], None]
 
 @dataclass
 class BootstrapSteps:
-    """The three real units of work, injectable so tests need no market data."""
+    """The real units of work, injectable so tests need no market data."""
 
     symbols: Callable[[], list[str]]
-    sync_symbol: Callable[[str], None]
+    sync_symbol: Callable[[str, float], None]
     build_dataset: Callable[[], int]
     train: Callable[[ProgressHook], int]
+    fetch_models: Callable[[], tuple[bool, str]]
 
 
-def default_steps(years: float = 3.0) -> BootstrapSteps:
+def default_steps() -> BootstrapSteps:
     def symbols() -> list[str]:
         return list(settings_from_watchlist().all_symbols())
 
-    def sync_symbol(symbol: str) -> None:
+    def sync_symbol(symbol: str, window_years: float) -> None:
         from intraday.data.sync import sync_history
 
-        sync_history(settings=settings_from_watchlist(), years=years, symbols=[symbol])
+        sync_history(
+            settings=settings_from_watchlist(), years=window_years, symbols=[symbol]
+        )
+
+    def fetch_models() -> tuple[bool, str]:
+        from intraday.modelbundle import download_bundle
+
+        result = download_bundle()
+        return result.ok, result.message
 
     def build() -> int:
         from intraday.dataset import build_dataset
@@ -221,7 +258,11 @@ def default_steps(years: float = 3.0) -> BootstrapSteps:
         return len(reports)
 
     return BootstrapSteps(
-        symbols=symbols, sync_symbol=sync_symbol, build_dataset=build, train=train
+        symbols=symbols,
+        sync_symbol=sync_symbol,
+        build_dataset=build,
+        train=train,
+        fetch_models=fetch_models,
     )
 
 
@@ -273,6 +314,15 @@ class BootstrapRunner:
 
     # -- internals ---------------------------------------------------------
 
+    def _stage_runners(self) -> dict[str, Callable[[BootstrapState], None]]:
+        return {
+            "models": self._stage_models,
+            "recent": self._stage_recent,
+            "backfill": self._stage_backfill,
+            "dataset": self._stage_dataset,
+            "training": self._stage_training,
+        }
+
     def _write(self, state: BootstrapState) -> None:
         save_state(state, self.path)
 
@@ -297,7 +347,13 @@ class BootstrapRunner:
         state.started_at = state.started_at or _now()
 
         for stage in STAGES:
-            if stage in state.completed_stages:
+            if stage in state.completed_stages or stage in state.skipped_stages:
+                continue
+            if stage in ("dataset", "training") and state.models_source == "downloaded":
+                # Verified published models are already in place; retraining them
+                # here would take hours and change nothing.
+                state.skipped_stages.append(stage)
+                self._write(state)
                 continue
             state.stage = stage
             state.current = 0
@@ -305,7 +361,7 @@ class BootstrapRunner:
             state.detail = ""
             state.stage_started_at = _now()
             self._write(state)
-            getattr(self, f"_stage_{stage}")(state)
+            self._stage_runners()[stage](state)
             state.completed_stages.append(stage)
             self._write(state)
 
@@ -315,16 +371,41 @@ class BootstrapRunner:
         state.detail = ""
         self._write(state)
 
-    def _stage_history(self, state: BootstrapState) -> None:
+    def _stage_models(self, state: BootstrapState) -> None:
+        state.total = 1
+        state.detail = "Checking for the published, pre-trained models."
+        self._write(state)
+        ok, message = self.steps.fetch_models()
+        state.models_source = "downloaded" if ok else "local"
+        state.current = 1
+        state.detail = message
+        self._write(state)
+
+    def _sync_all(self, state: BootstrapState, years: float, detail: str) -> None:
         symbols = self.steps.symbols()
         state.total = len(symbols)
-        state.detail = "Three years of 1-minute bars. The first run takes a while."
+        state.current = 0
+        state.detail = detail
         self._write(state)
         for index, symbol in enumerate(symbols, start=1):
-            self.steps.sync_symbol(symbol)
+            self.steps.sync_symbol(symbol, years)
             state.current = index
             state.detail = f"{symbol} done"
             self._write(state)
+
+    def _stage_recent(self, state: BootstrapState) -> None:
+        self._sync_all(
+            state,
+            RECENT_DAYS / 365,
+            f"The last {RECENT_DAYS} trading days, so the engine can start predicting.",
+        )
+
+    def _stage_backfill(self, state: BootstrapState) -> None:
+        self._sync_all(
+            state,
+            3.0,
+            "Three years of 1-minute bars, in the background. The dashboard keeps working.",
+        )
 
     def _stage_dataset(self, state: BootstrapState) -> None:
         state.total = 1

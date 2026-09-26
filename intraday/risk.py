@@ -21,13 +21,13 @@ class RiskProfile:
     own one-minute volatility so it survives noise.
     """
 
-    account_equity: float = 25_000.0
+    account_equity: float = 40_000.0
     position_size: float = 1_000.0
     hard_stop_pct: float = 0.20
     working_stop_atr: float = 1.0
     max_working_stop_pct: float = 0.01
     min_working_stop_pct: float = 0.003
-    daily_loss_limit_pct: float = 0.03
+    daily_loss_limit_pct: float = 0.025  # $1,000 a day on $40,000
     max_open_positions: int = 5
     honor_stop_on_model_trades: bool = True
 

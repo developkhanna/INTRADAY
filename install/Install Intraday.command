@@ -32,6 +32,15 @@ printf '\n============================================\n'
 printf '  Intraday dashboard — one-time installation\n'
 printf '============================================\n'
 info "This window is just showing you progress. You can close it when it says so."
+info "Nothing you already have is touched: your positions, risk settings, watchlist"
+info "and prediction history in ~/.intraday are left exactly as they are."
+
+if [ "$(uname -s)" != "Darwin" ]; then
+  fail "This installer is for macOS only."
+fi
+if [ "$(uname -m)" != "arm64" ]; then
+  fail "This build targets Apple Silicon Macs (M1/M2/M3). Yours reports $(uname -m)."
+fi
 
 # --- 1. Python ---------------------------------------------------------------
 
@@ -74,7 +83,7 @@ install_python() {
   rm -f "$pkg"
 }
 
-say "Step 1 of 5 — Checking Python…"
+say "Step 1 of 6 — Checking Python…"
 if PYTHON="$(find_python)"; then
   info "Found $("$PYTHON" --version 2>&1)."
 else
@@ -86,7 +95,7 @@ fi
 
 # --- 2. The app itself --------------------------------------------------------
 
-say "Step 2 of 5 — Getting the latest version of the app…"
+say "Step 2 of 6 — Getting the latest version of the app…"
 mkdir -p "$INTRADAY_HOME" "$LOG_DIR"
 
 if command -v git >/dev/null 2>&1; then
@@ -112,8 +121,9 @@ fi
 
 # --- 3. Private Python environment -------------------------------------------
 
-say "Step 3 of 5 — Installing the app's own Python packages…"
-info "A few hundred megabytes of maths libraries. Two to five minutes."
+say "Step 3 of 6 — Installing the app's own Python packages…"
+info "A few hundred megabytes of maths libraries, all pre-built for Apple Silicon."
+info "Two to five minutes; nothing is compiled."
 if [ ! -x "$VENV/bin/python" ]; then
   "$PYTHON" -m venv "$VENV" || fail "Could not create the Python environment."
 fi
@@ -122,9 +132,21 @@ fi
   || fail "Could not install the app's packages."
 info "Done."
 
-# --- 4. Background services ---------------------------------------------------
+# --- 4. Pre-trained models ----------------------------------------------------
 
-say "Step 4 of 5 — Making it start by itself every time you log in…"
+say "Step 4 of 6 — Fetching the trained models…"
+info "These were trained and validated elsewhere, so this Mac does not have to."
+if "$VENV/bin/python" -m intraday.modelbundle; then
+  info "Checksum verified."
+else
+  info "No verified model bundle was available."
+  info "The dashboard will train its own models in the background instead, which"
+  info "takes hours rather than minutes. It will say so on the page."
+fi
+
+# --- 5. Background services ---------------------------------------------------
+
+say "Step 5 of 6 — Making it start by itself every time you log in…"
 mkdir -p "$AGENT_DIR"
 chmod +x "$APP_DIR/install/bin/run-api.sh" "$APP_DIR/install/bin/run-live-loop.sh"
 
@@ -184,9 +206,9 @@ load_agent "com.intraday.dashboard"
 load_agent "com.intraday.liveloop"
 info "Registered. Logs go to $LOG_DIR and are trimmed automatically."
 
-# --- 5. Open it ---------------------------------------------------------------
+# --- 6. Open it ---------------------------------------------------------------
 
-say "Step 5 of 5 — Starting the dashboard…"
+say "Step 6 of 6 — Starting the dashboard…"
 ready=""
 for _ in $(seq 1 60); do
   if curl -fsS "http://localhost:$PORT/healthz" >/dev/null 2>&1; then
@@ -212,10 +234,13 @@ A browser tab should have opened at http://localhost:$PORT
 
   • If it asks for Alpaca keys, follow the three steps on that page. That is the
     only thing the app needs from you.
-  • After you save the keys it starts downloading three years of market history
-    in the background. That takes roughly 40 minutes on a normal connection, and
-    the page shows you how far along it is. You can close the laptop; it picks up
-    where it left off.
+  • After you save the keys it downloads the last few trading days of prices,
+    which takes a few minutes — then the dashboard is live. The full three years
+    of history keeps downloading behind it; the page shows how far along it is,
+    and closing the laptop is fine, it picks up where it left off.
+  • The System tab has a switch, on by default, that keeps this Mac awake while
+    the US market is open (17:30–00:00 Abu Dhabi time) so predictions keep being
+    recorded. Turn it off there whenever you want.
   • From now on the dashboard starts on its own every time you log in. Just open
     http://localhost:$PORT — bookmark it, or use "Open Intraday" in this folder.
 

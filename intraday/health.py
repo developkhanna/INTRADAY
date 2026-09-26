@@ -10,10 +10,16 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from intraday.config import DATA_DIR, MARKET_TZ, SESSION_CLOSE_MIN, SESSION_OPEN_MIN
 from intraday.credentials import load_credentials, mask
+
+# The owner trades US stocks from Abu Dhabi, so every time shown has to say
+# which clock it is on.
+LOCAL_TZ = ZoneInfo(os.environ.get("INTRADAY_LOCAL_TZ", "Asia/Dubai"))
 
 HEARTBEAT_FILE = DATA_DIR / "live_loop.json"
 
@@ -55,6 +61,34 @@ def market_is_open(now: dt.datetime | None = None) -> bool:
     return SESSION_OPEN_MIN <= minutes < SESSION_CLOSE_MIN
 
 
+def _session_local_window() -> tuple[str, str]:
+    """Today's 09:30-16:00 New York, expressed on the owner's own clock."""
+    today = dt.datetime.now(MARKET_TZ).date()
+    midnight = dt.datetime.combine(today, dt.time(), tzinfo=MARKET_TZ)
+    opens = (midnight + dt.timedelta(minutes=SESSION_OPEN_MIN)).astimezone(LOCAL_TZ)
+    closes = (midnight + dt.timedelta(minutes=SESSION_CLOSE_MIN)).astimezone(LOCAL_TZ)
+    return opens.strftime("%H:%M"), closes.strftime("%H:%M")
+
+
+def clock(now: dt.datetime | None = None) -> dict:
+    """Both clocks the owner cares about, always labelled."""
+    now = now or dt.datetime.now(dt.timezone.utc)
+    new_york = now.astimezone(MARKET_TZ)
+    local = now.astimezone(LOCAL_TZ)
+    opens, closes = _session_local_window()
+    return {
+        "new_york": new_york.strftime("%H:%M"),
+        "new_york_label": "New York",
+        "local": local.strftime("%H:%M"),
+        "local_label": local.tzname() or str(LOCAL_TZ),
+        "local_zone": str(LOCAL_TZ),
+        "date_local": local.strftime("%a %d %b"),
+        "session_local": f"{opens}–{closes}",
+        "session_new_york": "09:30–16:00",
+        "market_open": market_is_open(now),
+    }
+
+
 def _minutes_since(timestamp: str | None) -> float | None:
     if not timestamp:
         return None
@@ -87,8 +121,19 @@ def snapshot(last_bar: dt.datetime | None = None, predictions_today: int | None 
     tick_minutes = _minutes_since(tick.get("at")) if tick else None
     bar_minutes = _minutes_since(last_bar.isoformat()) if last_bar is not None else None
     open_now = market_is_open()
+    times = clock()
 
     items = [
+        {
+            "name": "Market hours",
+            "ok": True,
+            "text": (
+                f"US market {'open' if open_now else 'closed'}. "
+                f"It runs {times['session_local']} your time "
+                f"({times['session_new_york']} New York). "
+                f"Now: {times['local']} here, {times['new_york']} in New York."
+            ),
+        },
         {
             "name": "Dashboard",
             "ok": True,
@@ -153,6 +198,7 @@ def snapshot(last_bar: dt.datetime | None = None, predictions_today: int | None 
     return {
         "items": items,
         "warnings": warnings,
+        "clock": times,
         "market_open": open_now,
         "stale": stale,
         "credentials_ok": credentials is not None,

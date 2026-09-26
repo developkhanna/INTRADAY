@@ -18,8 +18,18 @@ def test_working_stop_tracks_volatility_but_stays_in_band(risk: RiskProfile) -> 
 
 def test_dollar_limits(risk: RiskProfile) -> None:
     assert risk.hard_stop_dollars == pytest.approx(200.0)
-    assert risk.daily_loss_limit_dollars == pytest.approx(750.0)
+    assert risk.daily_loss_limit_dollars == pytest.approx(625.0)
     assert risk.shares_for(250.0) == 4
+
+
+def test_defaults_match_the_owners_account() -> None:
+    profile = RiskProfile()
+    assert profile.account_equity == 40_000.0
+    assert profile.position_size == 1_000.0
+    assert profile.daily_loss_limit_dollars == pytest.approx(1_000.0)
+    assert profile.hard_stop_pct == 0.20
+    assert profile.max_open_positions == 5
+    assert profile.honor_stop_on_model_trades is True
 
 
 def test_hard_ceiling_forces_exit(risk: RiskProfile) -> None:
